@@ -1,5 +1,6 @@
 import asyncio
 import websockets
+import os
 
 clients = set()
 
@@ -7,7 +8,7 @@ async def handler(websocket, path):
     clients.add(websocket)
     try:
         async for message in websocket:
-            # Relay the message to all connected clients
+            # Relay the message to all connected clients except sender
             for client in clients:
                 if client != websocket:
                     await client.send(message)
@@ -16,7 +17,14 @@ async def handler(websocket, path):
     finally:
         clients.remove(websocket)
 
-# Start the WebSocket server
-start_server = websockets.serve(handler, "localhost", 8765)
-asyncio.get_event_loop().run_until_complete(start_server)
-asyncio.get_event_loop().run_forever()
+async def main():
+    # Get port from environment variable (Render will provide this)
+    port = int(os.environ.get("PORT", 8765))
+    
+    # Allow connections from any origin
+    async with websockets.serve(handler, "0.0.0.0", port):
+        print(f"WebSocket server started on port {port}")
+        await asyncio.Future()  # run forever
+
+if __name__ == "__main__":
+    asyncio.run(main())

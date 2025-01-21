@@ -1,9 +1,53 @@
+// Add room functionality at the start of app.js
+let roomId = '';
+
+// Function to generate or join a room
+function initializeRoom() {
+    // Check URL for room ID
+    const urlParams = new URLSearchParams(window.location.search);
+    roomId = urlParams.get('room');
+    
+    if (!roomId) {
+        // Generate a random room ID if none exists
+        roomId = Math.random().toString(36).substring(7);
+        // Update URL with room ID
+        window.history.pushState({}, '', `?room=${roomId}`);
+    }
+    
+    // Display room link
+    const roomLink = document.createElement('div');
+    roomLink.innerHTML = `
+        <div style="margin: 10px; padding: 10px; background: #f0f0f0; border-radius: 5px;">
+            Share this link to connect: <br>
+            <input type="text" 
+                   value="${window.location.href}" 
+                   style="width: 100%; margin-top: 5px; padding: 5px;"
+                   readonly
+                   onclick="this.select();">
+        </div>
+    `;
+    document.body.insertBefore(roomLink, document.body.firstChild);
+}
+
+// Initialize room before setting up WebSocket
+initializeRoom();
+
+// Update WebSocket connection to include room info
 const isLocal = window.location.hostname === 'localhost';
 const signalingServer = new WebSocket(
     isLocal 
-        ? 'ws://localhost:8765'
-        : 'wss://webrtc-chat-yitq.onrender.com'  // Assuming this will be your Render URL
+        ? `ws://localhost:8765?room=${roomId}`
+        : `wss://webrtc-chat-yitq.onrender.com?room=${roomId}`
 );
+
+signalingServer.onopen = () => {
+    console.log('Connected to signaling server');
+    // Send room join message
+    signalingServer.send(JSON.stringify({
+        type: 'join',
+        room: roomId
+    }));
+};
 
 const localVideo = document.getElementById('localVideo');
 const remoteVideo = document.getElementById('remoteVideo');

@@ -1,40 +1,52 @@
 import asyncio
 import websockets
-import os
+import json
 import logging
+import os
+from urllib.parse import parse_qs
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 
-clients = set()
+# Store clients by room
+rooms = {}
 
 async def handler(websocket, path):
-    clients.add(websocket)
-    logging.info(f"New client connected. Total clients: {len(clients)}")
+    # Parse room from query string
+    query_params = parse_qs(websocket.path_name.split('?')[1]) if '?' in websocket.path_name else {}
+    room_id = query_params.get('room', [None])[0]
+    
+    if not room_id:
+        logging.warning("No room ID provided")
+        return
+    
+    # Initialize room if it doesn't exist
+    if room_id not in rooms:
+        rooms[room_id] = set()
+    
+    # Add client to room
+    rooms[room_id].add(websocket)
+    logging.info(f"Client joined room {room_id}. Clients in room: {len(rooms[room_id])}")
+    
     try:
         async for message in websocket:
-            logging.info(f"Received message: {message[:100]}...")  # Log first 100 chars
-            for client in clients:
+            # Relay message to all clients in the same room
+            for client in rooms[room_id]:
                 if client != websocket:
                     await client.send(message)
     except websockets.ConnectionClosed:
-        logging.info("Client disconnected")
+        logging.info(f"Client disconnected from room {room_id}")
     finally:
-        clients.remove(websocket)
-        logging.info(f"Client removed. Total clients: {len(clients)}")
+        # Remove client from room
+        rooms[room_id].remove(websocket)
+        if not rooms[room_id]:
+            del rooms[room_id]
+            logging.info(f"Room {room_id} deleted")
 
 async def main():
-    # Get port from environment variable (Render will provide this)
     port = int(os.environ.get("PORT", 8765))
     
-    logging.info(f"Starting server on port {port}")
-    async with websockets.serve(
-        handler,
-        "0.0.0.0",
-        port,
-        ping_interval=None  # Disable ping/pong for Render
-    ):
-        logging.info("WebSocket server is running")
+    async with websockets.serve(handler, "0.0.0.0", port, ping_interval=None):
+        logging.info(f"WebSocket server running on port {port}")
         await asyncio.Future()  # run forever
 
 if __name__ == "__main__":

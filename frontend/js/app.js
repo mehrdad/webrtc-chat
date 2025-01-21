@@ -1,4 +1,9 @@
-const signalingServer = new WebSocket('ws://localhost:8765/');
+const isLocal = window.location.hostname === 'localhost';
+const signalingServer = new WebSocket(
+    isLocal 
+        ? 'ws://localhost:8765'
+        : 'wss://webrtc-chat-kata.onrender.com'  // Assuming this will be your Render URL
+);
 const localVideo = document.getElementById('localVideo');
 const remoteVideo = document.getElementById('remoteVideo');
 const chatContainer = document.getElementById('chat-container');

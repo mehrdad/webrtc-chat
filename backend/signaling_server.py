@@ -5,6 +5,7 @@ import logging
 import os
 from urllib.parse import parse_qs
 
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -37,7 +38,6 @@ async def handler(websocket, path):
             async for message in websocket:
                 try:
                     data = json.loads(message)
-                    # Add room ID to message if not present
                     if 'room' not in data:
                         data['room'] = room_id
                     
@@ -67,14 +67,26 @@ async def handler(websocket, path):
         await websocket.close(1011, "Internal server error")
 
 async def main():
-    port = int(os.environ.get("PORT", 8765))
+    # Get port from environment variable (Render.com sets this)
+    port = int(os.environ.get("PORT", 10000))
+    
+    # Log startup
+    logging.info(f"Starting WebSocket server on port {port}")
     
     async with websockets.serve(
         handler, 
-        "0.0.0.0", 
+        "0.0.0.0",  # Listen on all available interfaces
         port,
         ping_interval=20,
         ping_timeout=60
     ):
-        logging.info(f"WebSocket server running on port {port}")
-        await asyncio.Future()
+        logging.info(f"WebSocket server is running on port {port}")
+        await asyncio.Future()  # run forever
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Server stopped by user")
+    except Exception as e:
+        logging.error(f"Server error: {str(e)}")

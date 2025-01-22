@@ -14,6 +14,7 @@ let remoteStream;
 let peerConnection;
 let chatChannel;
 let isInitiator = false;
+let pendingMessages = [];
 
 // ICE servers configuration
 const iceServers = {
@@ -31,32 +32,49 @@ const iceServers = {
 function updateConnectionStatus(status) {
     if (connectionStatus) {
         connectionStatus.textContent = status;
+        console.log('Connection status:', status);
     }
 }
 
 // Send a chat message through the data channel
 function sendMessage(message) {
+    console.log('Attempting to send message:', message);
+    console.log('Chat channel state:', chatChannel ? chatChannel.readyState : 'not initialized');
+
     if (!chatChannel) {
-        console.warn('Chat channel not initialized');
+        console.warn('Chat channel not initialized, queuing message');
+        pendingMessages.push(message);
+        updateConnectionStatus('Connecting... Message will be sent when ready');
+        return;
+    }
+
+    if (chatChannel.readyState === 'connecting') {
+        console.log('Chat channel is connecting, queuing message');
+        pendingMessages.push(message);
         return;
     }
 
     if (chatChannel.readyState !== 'open') {
         console.warn('Chat channel not open. Current state:', chatChannel.readyState);
-        // Store message to send when channel opens
-        chatChannel.onopen = () => {
-            chatChannel.send(message);
-            displayMessage(message, true);
-        };
+        updateConnectionStatus('Chat connection not ready. Please wait.');
         return;
     }
 
     try {
         chatChannel.send(message);
         displayMessage(message, true);
+        console.log('Message sent successfully');
     } catch (err) {
         console.error('Failed to send message:', err);
         updateConnectionStatus('Failed to send message. Please try again.');
+    }
+}
+
+// Send any pending messages
+function sendPendingMessages() {
+    while (pendingMessages.length > 0 && chatChannel && chatChannel.readyState === 'open') {
+        const message = pendingMessages.shift();
+        sendMessage(message);
     }
 }
 
@@ -78,6 +96,8 @@ function initializeDOMElements() {
     connectionStatus = document.getElementById('connection-status');
     roomLinkInput = document.getElementById('room-link');
 
+    chatInput.disabled = true; // Disable chat input until connection is ready
+
     // Add chat input event listener
     chatInput.addEventListener('keydown', event => {
         if (event.key === 'Enter' && chatInput.value.trim()) {
@@ -92,6 +112,7 @@ function initializeDOMElements() {
 function createPeerConnection() {
     try {
         const pc = new RTCPeerConnection(iceServers);
+        console.log('PeerConnection created');
 
         pc.ontrack = event => {
             if (remoteVideo && event.streams[0]) {
@@ -101,7 +122,7 @@ function createPeerConnection() {
         };
 
         pc.onicecandidate = event => {
-            if (event.candidate && signalingServer.readyState === WebSocket.OPEN) {
+            if (event.candidate && signalingServer && signalingServer.readyState === WebSocket.OPEN) {
                 signalingServer.send(JSON.stringify({
                     type: 'candidate',
                     candidate: event.candidate
@@ -110,27 +131,32 @@ function createPeerConnection() {
         };
 
         pc.onconnectionstatechange = () => {
-            console.log('Connection state:', pc.connectionState);
+            console.log('Connection state changed:', pc.connectionState);
             switch (pc.connectionState) {
                 case 'connected':
                     updateConnectionStatus('Connected to peer');
                     break;
                 case 'disconnected':
                     updateConnectionStatus('Peer disconnected. Please refresh to reconnect.');
+                    chatInput.disabled = true;
                     break;
                 case 'failed':
                     updateConnectionStatus('Connection failed. Please refresh the page.');
+                    chatInput.disabled = true;
                     break;
             }
         };
 
         if (isInitiator) {
+            console.log('Creating data channel as initiator');
             chatChannel = pc.createDataChannel('chat', {
                 ordered: true
             });
             setupChatChannel(chatChannel);
         } else {
+            console.log('Waiting for data channel as non-initiator');
             pc.ondatachannel = event => {
+                console.log('Received data channel');
                 chatChannel = event.channel;
                 setupChatChannel(chatChannel);
             };
@@ -146,11 +172,14 @@ function createPeerConnection() {
 
 // Set up the chat channel
 function setupChatChannel(channel) {
+    console.log('Setting up chat channel');
+    
     channel.onopen = () => {
         console.log('Chat channel opened');
         chatInput.disabled = false;
         chatInput.placeholder = 'Type a message and press Enter';
         updateConnectionStatus('Chat channel opened');
+        sendPendingMessages(); // Send any messages that were queued
     };
 
     channel.onclose = () => {
@@ -158,6 +187,7 @@ function setupChatChannel(channel) {
         chatInput.disabled = true;
         chatInput.placeholder = 'Chat disconnected';
         updateConnectionStatus('Chat channel closed');
+        chatChannel = null; // Reset chat channel
     };
 
     channel.onmessage = event => {
@@ -179,6 +209,7 @@ async function initialize() {
             audio: true 
         });
         localVideo.srcObject = localStream;
+        updateConnectionStatus('Local media initialized');
 
         peerConnection = createPeerConnection();
         if (!peerConnection) return;
@@ -187,7 +218,7 @@ async function initialize() {
             peerConnection.addTrack(track, localStream);
         });
         
-        updateConnectionStatus('Local media initialized');
+        console.log('Local media and peer connection initialized');
     } catch (err) {
         console.error('Media initialization failed:', err);
         updateConnectionStatus('Failed to access camera/microphone. Please check your permissions.');
@@ -202,6 +233,7 @@ function connectSignalingServer() {
         ? `${wsProtocol}//localhost:8765?room=${roomId}`
         : `wss://webrtc-chat-yitq.onrender.com?room=${roomId}`;
 
+    console.log('Connecting to signaling server:', wsUrl);
     signalingServer = new WebSocket(wsUrl);
 
     signalingServer.onopen = () => {
@@ -226,6 +258,7 @@ function connectSignalingServer() {
     signalingServer.onmessage = async event => {
         try {
             const message = JSON.parse(event.data);
+            console.log('Received signaling message:', message.type);
 
             switch (message.type) {
                 case 'ready':
@@ -262,14 +295,15 @@ function initializeRoom() {
     roomId = urlParams.get('room') || Math.random().toString(36).substring(7);
     window.history.pushState({}, '', `?room=${roomId}`);
     
-    // Update room link input
     if (roomLinkInput) {
         roomLinkInput.value = window.location.href;
     }
+    console.log('Room initialized:', roomId);
 }
 
 // DOMContentLoaded handler
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('Document loaded, initializing application');
     initializeDOMElements();
     initializeRoom();
     initialize().then(connectSignalingServer).catch(err => {

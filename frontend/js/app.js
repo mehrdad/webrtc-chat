@@ -60,6 +60,62 @@ async function initialize() {
             console.error('Local video element not found');
         }
 
+        function createPeerConnection() {
+          try {
+              const pc = new RTCPeerConnection(iceServers);
+      
+              // Handle new tracks from remote peers
+              pc.ontrack = event => {
+                  console.log('Remote track received:', event.streams);
+                  if (remoteVideo && event.streams[0]) {
+                      remoteVideo.srcObject = event.streams[0];
+                  }
+              };
+      
+              // Handle ICE candidate events
+              pc.onicecandidate = event => {
+                  if (event.candidate) {
+                      console.log('Sending ICE candidate:', event.candidate);
+                      signalingServer.send(JSON.stringify({ 
+                          type: 'candidate', 
+                          candidate: event.candidate 
+                      }));
+                  }
+              };
+      
+              // Handle connection state changes
+              pc.onconnectionstatechange = () => {
+                  console.log('Connection state changed:', pc.connectionState);
+                  if (pc.connectionState === 'disconnected') {
+                      console.warn('Peer disconnected');
+                  }
+              };
+      
+              // Handle data channel (for chat functionality)
+              pc.ondatachannel = event => {
+                  console.log('Data channel received:', event.channel);
+                  chatChannel = event.channel;
+      
+                  chatChannel.onmessage = msgEvent => {
+                      console.log('Chat message received:', msgEvent.data);
+                      const message = document.createElement('div');
+                      message.textContent = msgEvent.data;
+                      chatContainer.appendChild(message);
+                  };
+      
+                  chatChannel.onopen = () => console.log('Chat channel opened');
+                  chatChannel.onclose = () => console.log('Chat channel closed');
+              };
+      
+              console.log('PeerConnection created');
+              return pc;
+          } catch (err) {
+              console.error('Error creating PeerConnection:', err);
+              throw err;
+          }
+      }
+      
+
         peerConnection = createPeerConnection();
         localStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, localStream);

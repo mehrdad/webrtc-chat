@@ -25,7 +25,26 @@ const iceServers = {
     ]
 };
 
-// Initialize DOM elements
+function sendMessage(message) {
+    if (!chatChannel || chatChannel.readyState !== 'open') {
+        console.error('Chat channel is not open. Cannot send message.');
+        return;
+    }
+
+    try {
+        chatChannel.send(message);
+        console.log('Message sent:', message);
+
+        // Display the sent message in the chat UI
+        const sentMessage = document.createElement('div');
+        sentMessage.textContent = `You: ${message}`;
+        sentMessage.className = 'sent-message';
+        chatContainer.appendChild(sentMessage);
+    } catch (err) {
+        console.error('Failed to send message:', err);
+    }
+}
+
 function initializeDOMElements() {
     localVideo = document.getElementById('localVideo');
     remoteVideo = document.getElementById('remoteVideo');
@@ -33,151 +52,172 @@ function initializeDOMElements() {
     chatContainer = document.getElementById('chat-container');
 
     if (chatInput) {
-        chatInput.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') {
+        chatInput.addEventListener('keydown', event => {
+            if (event.key === 'Enter' && chatInput.value.trim()) {
                 sendMessage(chatInput.value);
                 chatInput.value = '';
             }
         });
+    } else {
+        console.error('Chat input element not found');
     }
 }
 
-// Initialize media devices
-async function initializeMedia() {
+async function initialize() {
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localVideo.srcObject = localStream;
+        console.log('Requesting media permissions...');
+        localStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true
+        });
 
-        localStream.getTracks().forEach((track) => {
+        if (localVideo) {
+            localVideo.srcObject = localStream;
+            console.log('Local video stream set');
+        } else {
+            console.error('Local video element not found');
+        }
+
+        peerConnection = createPeerConnection();
+
+        localStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, localStream);
         });
     } catch (err) {
-        console.error('Error accessing media devices:', err);
-        alert('Please allow access to your camera and microphone.');
+        console.error('Error initializing media devices:', err);
+        alert('Error accessing camera/microphone. Please check permissions.');
+        throw err;
     }
 }
 
-// Create WebRTC PeerConnection
 function createPeerConnection() {
-    const pc = new RTCPeerConnection(iceServers);
+    try {
+        const pc = new RTCPeerConnection(iceServers);
 
-    pc.ontrack = (event) => {
-        remoteStream = event.streams[0];
-        remoteVideo.srcObject = remoteStream;
-    };
+        pc.ontrack = event => {
+            console.log('Remote track received:', event.streams);
+            if (remoteVideo && event.streams[0]) {
+                remoteVideo.srcObject = event.streams[0];
+            }
+        };
 
-    pc.onicecandidate = (event) => {
-        if (event.candidate) {
-            signalingServer.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
-        }
-    };
+        pc.onicecandidate = event => {
+            if (event.candidate) {
+                if (signalingServer && signalingServer.readyState === WebSocket.OPEN) {
+                    signalingServer.send(JSON.stringify({
+                        type: 'candidate',
+                        candidate: event.candidate
+                    }));
+                } else {
+                    console.error('Signaling server is not connected. Cannot send ICE candidate.');
+                }
+            }
+        };
 
-    pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'disconnected') {
-            console.warn('Peer disconnected.');
-        }
-    };
+        pc.onconnectionstatechange = () => {
+            console.log('Connection state changed:', pc.connectionState);
+            if (pc.connectionState === 'disconnected') {
+                console.warn('Peer disconnected');
+            }
+        };
 
-    pc.ondatachannel = (event) => {
-        setupChatChannel(event.channel);
-    };
+        pc.ondatachannel = event => {
+            console.log('Data channel received:', event.channel);
+            chatChannel = event.channel;
 
-    return pc;
-}
+            chatChannel.onmessage = msgEvent => {
+                console.log('Chat message received:', msgEvent.data);
+                const message = document.createElement('div');
+                message.textContent = msgEvent.data;
+                chatContainer.appendChild(message);
+            };
 
-// Setup chat channel
-function setupChatChannel(channel) {
-    chatChannel = channel;
+            chatChannel.onopen = () => console.log('Chat channel opened');
+            chatChannel.onclose = () => console.log('Chat channel closed');
+        };
 
-    chatChannel.onmessage = (event) => {
-        const message = document.createElement('div');
-        message.textContent = `Peer: ${event.data}`;
-        chatContainer.appendChild(message);
-    };
-
-    chatChannel.onopen = () => console.log('Chat channel opened');
-    chatChannel.onclose = () => console.log('Chat channel closed');
-}
-
-// Send a chat message
-function sendMessage(message) {
-    if (chatChannel && chatChannel.readyState === 'open') {
-        chatChannel.send(message);
-        const messageElement = document.createElement('div');
-        messageElement.textContent = `You: ${message}`;
-        chatContainer.appendChild(messageElement);
-    } else {
-        console.error('Chat channel is not open.');
+        console.log('PeerConnection created');
+        return pc;
+    } catch (err) {
+        console.error('Error creating PeerConnection:', err);
+        throw err;
     }
 }
 
-// Connect to the signaling server
+function initializeRoom() {
+    const urlParams = new URLSearchParams(window.location.search);
+    roomId = urlParams.get('room');
+
+    if (!roomId) {
+        roomId = Math.random().toString(36).substring(7);
+        window.history.pushState({}, '', `?room=${roomId}`);
+    }
+
+    const roomLink = document.createElement('div');
+    roomLink.innerHTML = `
+        <div style="margin: 10px; padding: 10px; background: #f0f0f0; border-radius: 5px;">
+            Share this link to connect: <br>
+            <input type="text" 
+                   value="${window.location.href}" 
+                   style="width: 100%; margin-top: 5px; padding: 5px;"
+                   readonly
+                   onclick="this.select();">
+        </div>
+    `;
+    document.body.insertBefore(roomLink, document.body.firstChild);
+}
+
 function connectSignalingServer() {
-    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//webrtc-chat-yitq.onrender.com?room=${roomId}`;
+    const isLocal = window.location.hostname === 'localhost';
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = isLocal
+        ? `${wsProtocol}//localhost:8765?room=${roomId}`
+        : `wss://webrtc-chat-yitq.onrender.com?room=${roomId}`;
+
+    console.log('Connecting to signaling server at:', wsUrl);
 
     signalingServer = new WebSocket(wsUrl);
 
     signalingServer.onopen = () => {
-        signalingServer.send(JSON.stringify({ type: 'join', room: roomId }));
+        console.log('Connected to signaling server');
+        signalingServer.send(JSON.stringify({
+            type: 'ready',
+            room: roomId
+        }));
     };
 
-    signalingServer.onmessage = async (event) => {
-        const data = JSON.parse(event.data);
+    signalingServer.onmessage = async event => {
+        const message = JSON.parse(event.data);
 
-        switch (data.type) {
-            case 'offer':
-                if (!isInitiator) {
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-                    const answer = await peerConnection.createAnswer();
-                    await peerConnection.setLocalDescription(answer);
-                    signalingServer.send(JSON.stringify({ type: 'answer', answer }));
-                }
-                break;
-            case 'answer':
-                if (isInitiator) {
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-                }
-                break;
-            case 'candidate':
-                if (data.candidate) {
-                    peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-                }
-                break;
-            default:
-                console.error('Unknown message type:', data.type);
+        if (message.type === 'offer' && !isInitiator) {
+            console.log('Received offer:', message);
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            signalingServer.send(JSON.stringify({ type: 'answer', answer }));
+        } else if (message.type === 'answer' && isInitiator) {
+            console.log('Received answer:', message);
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+        } else if (message.type === 'candidate') {
+            console.log('Received ICE candidate:', message);
+            if (message.candidate) {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+            }
         }
     };
+
+    signalingServer.onerror = err => console.error('WebSocket error:', err);
+    signalingServer.onclose = () => console.log('Disconnected from signaling server');
 }
 
-// Initialize the app
-async function initialize() {
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM fully loaded');
     initializeDOMElements();
+    initializeRoom();
 
-    const urlParams = new URLSearchParams(window.location.search);
-    roomId = urlParams.get('room') || Math.random().toString(36).substring(7);
-    window.history.pushState({}, '', `?room=${roomId}`);
-
-    const roomLink = document.createElement('div');
-    roomLink.innerHTML = `
-        Share this link: <input type="text" value="${location.href}" readonly>
-    `;
-    document.body.prepend(roomLink);
-
-    peerConnection = createPeerConnection();
-    await initializeMedia();
-
-    if (!urlParams.get('room')) {
-        isInitiator = true;
-        const dataChannel = peerConnection.createDataChannel('chat');
-        setupChatChannel(dataChannel);
-
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        signalingServer.send(JSON.stringify({ type: 'offer', offer }));
-    }
-
-    connectSignalingServer();
-}
-
-document.addEventListener('DOMContentLoaded', initialize);
+    initialize().then(() => {
+        connectSignalingServer();
+    }).catch(err => {
+        console.error('Failed to initialize:', err);
+    });
+});

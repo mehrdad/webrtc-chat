@@ -5,55 +5,101 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebRTC Video Chat with Text Chat</title>
     <style>
-        /* Your existing styles */
-        
-        /* Add styles for error messages */
-        .error-message {
-            background-color: #ffebee;
-            color: #c62828;
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f2f5;
+        }
+
+        .video-container {
+            display: flex;
+            gap: 20px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        video {
+            width: 400px;
+            height: 300px;
+            border-radius: 8px;
+            background-color: #000;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        #chat-container {
+            width: 400px;
+            margin: 10px;
+            border: 1px solid #ddd;
             padding: 10px;
-            margin: 10px 0;
+            overflow-y: auto;
+            height: 200px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        #chat-input {
+            width: 390px;
+            padding: 10px;
+            margin-top: 5px;
+            border: 1px solid #ddd;
             border-radius: 4px;
-            display: none;
+            font-size: 14px;
         }
 
-        /* Add loading spinner */
-        .loading {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #3498db;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-right: 10px;
+        .status-container {
+            margin: 10px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            width: 400px;
         }
 
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+        .share-link {
+            word-break: break-all;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            margin-top: 10px;
+            border: 1px solid #ddd;
+        }
+
+        .message {
+            margin: 5px 0;
+            padding: 8px;
+            border-radius: 4px;
+            background-color: #f8f9fa;
+        }
+
+        .message.local {
+            background-color: #e3f2fd;
+            margin-left: 20px;
+        }
+
+        .message.remote {
+            background-color: #f5f5f5;
+            margin-right: 20px;
         }
     </style>
 </head>
 <body>
-    <h1>WebRTC Video Chat with Text Chat</h1>
-    
-    <!-- Add error message containers -->
-    <div id="media-error" class="error-message">
-        Unable to access camera/microphone. Please check permissions.
+    <h1>WebRTC Video Chat</h1>
+    <div class="status-container">
+        <div id="connection-status">Connecting...</div>
+        <div class="share-link">
+            <div>Share this link to connect:</div>
+            <input type="text" id="room-link" readonly onclick="this.select()" style="width: 100%; margin-top: 5px; padding: 5px;">
+        </div>
     </div>
-    <div id="connection-error" class="error-message">
-        Connection error. Trying to reconnect...
-    </div>
-
     <div class="video-container">
         <video id="localVideo" autoplay playsinline muted></video>
         <video id="remoteVideo" autoplay playsinline></video>
     </div>
-    
     <div id="chat-container"></div>
-    <input id="chat-input" type="text" placeholder="Type a message and press Enter" disabled>
-    
-    <script src="/js/app.js"></script>
-</body>
-</html>
+    <input id="chat-input" type="text" placeholder="Type a message an

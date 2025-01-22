@@ -81,6 +81,32 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeDOMElements();
     
     // Then initialize room and connection
+    function initializeRoom() {
+      // Check URL for room ID
+      const urlParams = new URLSearchParams(window.location.search);
+      roomId = urlParams.get('room');
+      
+      if (!roomId) {
+          // Generate a random room ID if none exists
+          roomId = Math.random().toString(36).substring(7);
+          // Update URL with room ID
+          window.history.pushState({}, '', `?room=${roomId}`);
+      }
+      
+      // Display room link
+      const roomLink = document.createElement('div');
+      roomLink.innerHTML = `
+          <div style="margin: 10px; padding: 10px; background: #f0f0f0; border-radius: 5px;">
+              Share this link to connect: <br>
+              <input type="text" 
+                     value="${window.location.href}" 
+                     style="width: 100%; margin-top: 5px; padding: 5px;"
+                     readonly
+                     onclick="this.select();">
+          </div>
+      `;
+      document.body.insertBefore(roomLink, document.body.firstChild);
+  }
     initializeRoom();
     
     // Request camera/mic permissions and connect to signaling server

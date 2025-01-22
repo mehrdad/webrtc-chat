@@ -25,6 +25,7 @@ const iceServers = {
     ]
 };
 
+// Send a chat message through the data channel
 function sendMessage(message) {
     if (!chatChannel || chatChannel.readyState !== 'open') {
         console.error('Chat channel is not open. Cannot send message.');
@@ -38,120 +39,139 @@ function sendMessage(message) {
         // Display the sent message in the chat UI
         const sentMessage = document.createElement('div');
         sentMessage.textContent = `You: ${message}`;
-        sentMessage.className = 'sent-message';
+        sentMessage.className = 'sent-message'; // Optional CSS styling class
         chatContainer.appendChild(sentMessage);
     } catch (err) {
         console.error('Failed to send message:', err);
     }
 }
 
+// Initialize DOM elements
 function initializeDOMElements() {
     localVideo = document.getElementById('localVideo');
     remoteVideo = document.getElementById('remoteVideo');
     chatInput = document.getElementById('chat-input');
     chatContainer = document.getElementById('chat-container');
 
-    if (chatInput) {
-        chatInput.addEventListener('keydown', event => {
-            if (event.key === 'Enter' && chatInput.value.trim()) {
-                sendMessage(chatInput.value);
-                chatInput.value = '';
-            }
-        });
-    } else {
-        console.error('Chat input element not found');
-    }
-}
-
-async function initialize() {
-    try {
-        console.log('Requesting media permissions...');
-        localStream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: true
-        });
-
-        if (localVideo) {
-            localVideo.srcObject = localStream;
-            console.log('Local video stream set');
-        } else {
-            console.error('Local video element not found');
+    // Add chat input event listener
+    chatInput.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && chatInput.value.trim()) {
+            sendMessage(chatInput.value.trim());
+            chatInput.value = ''; // Clear input box after sending
         }
-
-        peerConnection = createPeerConnection();
-
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-        });
-    } catch (err) {
-        console.error('Error initializing media devices:', err);
-        alert('Error accessing camera/microphone. Please check permissions.');
-        throw err;
-    }
+    });
 }
 
+// Create a new RTCPeerConnection
 function createPeerConnection() {
-    try {
-        const pc = new RTCPeerConnection(iceServers);
+    const pc = new RTCPeerConnection(iceServers);
 
-        pc.ontrack = event => {
-            console.log('Remote track received:', event.streams);
-            if (remoteVideo && event.streams[0]) {
-                remoteVideo.srcObject = event.streams[0];
-            }
-        };
+    // Handle remote tracks
+    pc.ontrack = event => {
+        if (remoteVideo && event.streams[0]) {
+            remoteVideo.srcObject = event.streams[0];
+        }
+    };
 
-        pc.onicecandidate = event => {
-            if (event.candidate) {
-                if (signalingServer && signalingServer.readyState === WebSocket.OPEN) {
-                    signalingServer.send(JSON.stringify({
-                        type: 'candidate',
-                        candidate: event.candidate
-                    }));
-                } else {
-                    console.error('Signaling server is not connected. Cannot send ICE candidate.');
-                }
-            }
-        };
+    // Handle ICE candidates
+    pc.onicecandidate = event => {
+        if (event.candidate) {
+            signalingServer.send(JSON.stringify({
+                type: 'candidate',
+                candidate: event.candidate
+            }));
+        }
+    };
 
-        pc.onconnectionstatechange = () => {
-            console.log('Connection state changed:', pc.connectionState);
-            if (pc.connectionState === 'disconnected') {
-                console.warn('Peer disconnected');
-            }
-        };
+    // Handle connection state changes
+    pc.onconnectionstatechange = () => {
+        console.log('Connection state changed:', pc.connectionState);
+    };
 
+    // Handle data channel for chat
+    if (isInitiator) {
+        chatChannel = pc.createDataChannel('chat');
+        setupChatChannel(chatChannel);
+    } else {
         pc.ondatachannel = event => {
-            console.log('Data channel received:', event.channel);
             chatChannel = event.channel;
-
-            chatChannel.onmessage = msgEvent => {
-                console.log('Chat message received:', msgEvent.data);
-                const message = document.createElement('div');
-                message.textContent = msgEvent.data;
-                chatContainer.appendChild(message);
-            };
-
-            chatChannel.onopen = () => console.log('Chat channel opened');
-            chatChannel.onclose = () => console.log('Chat channel closed');
+            setupChatChannel(chatChannel);
         };
-
-        console.log('PeerConnection created');
-        return pc;
-    } catch (err) {
-        console.error('Error creating PeerConnection:', err);
-        throw err;
     }
+
+    return pc;
 }
 
+// Set up the chat channel
+function setupChatChannel(channel) {
+    channel.onopen = () => {
+        console.log('Chat channel opened');
+    };
+    channel.onclose = () => {
+        console.log('Chat channel closed');
+    };
+    channel.onmessage = event => {
+        console.log('Chat message received:', event.data);
+
+        // Display received messages in the chat UI
+        const receivedMessage = document.createElement('div');
+        receivedMessage.textContent = event.data;
+        receivedMessage.className = 'received-message'; // Optional CSS styling class
+        chatContainer.appendChild(receivedMessage);
+    };
+}
+
+// Initialize WebRTC and media streams
+async function initialize() {
+    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localVideo.srcObject = localStream;
+
+    peerConnection = createPeerConnection();
+
+    localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+    });
+}
+
+// Connect to the signaling server
+function connectSignalingServer() {
+    const isLocal = window.location.hostname === 'localhost';
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = isLocal
+        ? `${wsProtocol}//localhost:8765?room=${roomId}`
+        : `wss://webrtc-chat-yitq.onrender.com?room=${roomId}`;
+
+    signalingServer = new WebSocket(wsUrl);
+
+    signalingServer.onopen = () => {
+        console.log('Connected to signaling server');
+        signalingServer.send(JSON.stringify({
+            type: 'ready',
+            room: roomId
+        }));
+    };
+
+    signalingServer.onmessage = async event => {
+        const message = JSON.parse(event.data);
+
+        if (message.type === 'offer') {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            signalingServer.send(JSON.stringify({ type: 'answer', answer }));
+        } else if (message.type === 'answer') {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+        } else if (message.type === 'candidate') {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+        }
+    };
+}
+
+// Initialize room and handle room creation or joining
 function initializeRoom() {
     const urlParams = new URLSearchParams(window.location.search);
-    roomId = urlParams.get('room');
-
-    if (!roomId) {
-        roomId = Math.random().toString(36).substring(7);
-        window.history.pushState({}, '', `?room=${roomId}`);
-    }
+    roomId = urlParams.get('room') || Math.random().toString(36).substring(7);
+    window.history.pushState({}, '', `?room=${roomId}`);
 
     const roomLink = document.createElement('div');
     roomLink.innerHTML = `
@@ -167,57 +187,11 @@ function initializeRoom() {
     document.body.insertBefore(roomLink, document.body.firstChild);
 }
 
-function connectSignalingServer() {
-    const isLocal = window.location.hostname === 'localhost';
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = isLocal
-        ? `${wsProtocol}//localhost:8765?room=${roomId}`
-        : `wss://webrtc-chat-yitq.onrender.com?room=${roomId}`;
-
-    console.log('Connecting to signaling server at:', wsUrl);
-
-    signalingServer = new WebSocket(wsUrl);
-
-    signalingServer.onopen = () => {
-        console.log('Connected to signaling server');
-        signalingServer.send(JSON.stringify({
-            type: 'ready',
-            room: roomId
-        }));
-    };
-
-    signalingServer.onmessage = async event => {
-        const message = JSON.parse(event.data);
-
-        if (message.type === 'offer' && !isInitiator) {
-            console.log('Received offer:', message);
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            signalingServer.send(JSON.stringify({ type: 'answer', answer }));
-        } else if (message.type === 'answer' && isInitiator) {
-            console.log('Received answer:', message);
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
-        } else if (message.type === 'candidate') {
-            console.log('Received ICE candidate:', message);
-            if (message.candidate) {
-                await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
-            }
-        }
-    };
-
-    signalingServer.onerror = err => console.error('WebSocket error:', err);
-    signalingServer.onclose = () => console.log('Disconnected from signaling server');
-}
-
+// DOMContentLoaded handler
 document.addEventListener('DOMContentLoaded', () => {
-    console.log('DOM fully loaded');
     initializeDOMElements();
     initializeRoom();
-
-    initialize().then(() => {
-        connectSignalingServer();
-    }).catch(err => {
+    initialize().then(connectSignalingServer).catch(err => {
         console.error('Failed to initialize:', err);
     });
 });

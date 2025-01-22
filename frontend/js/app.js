@@ -106,9 +106,12 @@ function createPeerConnection() {
 function setupChatChannel(channel) {
     channel.onopen = () => {
         console.log('Chat channel opened');
+        // Enable chat input
+        chatInput.disabled = false;
     };
     channel.onclose = () => {
         console.log('Chat channel closed');
+        chatInput.disabled = true; // Disable chat input
     };
     channel.onmessage = event => {
         console.log('Chat message received:', event.data);

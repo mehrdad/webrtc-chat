@@ -25,204 +25,159 @@ const iceServers = {
     ]
 };
 
-function sendMessage(message) {
-  if (!chatChannel || chatChannel.readyState !== 'open') {
-      console.error('Chat channel is not open. Cannot send message.');
-      return;
-  }
-
-  try {
-      chatChannel.send(message);
-      console.log('Message sent:', message);
-
-      // Optionally, display the sent message in the chat UI
-      const sentMessage = document.createElement('div');
-      sentMessage.textContent = `You: ${message}`;
-      sentMessage.className = 'sent-message'; // Add a class for styling if needed
-      chatContainer.appendChild(sentMessage);
-  } catch (err) {
-      console.error('Failed to send message:', err);
-  }
-}
-
-// Initialize all DOM elements
+// Initialize DOM elements
 function initializeDOMElements() {
     localVideo = document.getElementById('localVideo');
     remoteVideo = document.getElementById('remoteVideo');
     chatInput = document.getElementById('chat-input');
     chatContainer = document.getElementById('chat-container');
 
-    // Add chat input event listener only after element is found
     if (chatInput) {
-        chatInput.addEventListener('keydown', event => {
+        chatInput.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
                 sendMessage(chatInput.value);
                 chatInput.value = '';
             }
         });
-    } else {
-        console.error('Chat input element not found');
     }
 }
 
-async function initialize() {
+// Initialize media devices
+async function initializeMedia() {
     try {
-        console.log('Requesting media permissions...');
-        localStream = await navigator.mediaDevices.getUserMedia({ 
-            video: true, 
-            audio: true 
-        });
-        
-        if (localVideo) {
-            localVideo.srcObject = localStream;
-            console.log('Local video stream set');
-        } else {
-            console.error('Local video element not found');
-        }
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localVideo.srcObject = localStream;
 
-        function createPeerConnection() {
-          try {
-              const pc = new RTCPeerConnection(iceServers);
-      
-              // Handle new tracks from remote peers
-              pc.ontrack = event => {
-                  console.log('Remote track received:', event.streams);
-                  if (remoteVideo && event.streams[0]) {
-                      remoteVideo.srcObject = event.streams[0];
-                  }
-              };
-      
-              // Handle ICE candidate events
-              pc.onicecandidate = event => {
-                  if (event.candidate) {
-                      console.log('Sending ICE candidate:', event.candidate);
-                      signalingServer.send(JSON.stringify({ 
-                          type: 'candidate', 
-                          candidate: event.candidate 
-                      }));
-                  }
-              };
-      
-              // Handle connection state changes
-              pc.onconnectionstatechange = () => {
-                  console.log('Connection state changed:', pc.connectionState);
-                  if (pc.connectionState === 'disconnected') {
-                      console.warn('Peer disconnected');
-                  }
-              };
-      
-              // Handle data channel (for chat functionality)
-              pc.ondatachannel = event => {
-                  console.log('Data channel received:', event.channel);
-                  chatChannel = event.channel;
-      
-                  chatChannel.onmessage = msgEvent => {
-                      console.log('Chat message received:', msgEvent.data);
-                      const message = document.createElement('div');
-                      message.textContent = msgEvent.data;
-                      chatContainer.appendChild(message);
-                  };
-      
-                  chatChannel.onopen = () => console.log('Chat channel opened');
-                  chatChannel.onclose = () => console.log('Chat channel closed');
-              };
-      
-              console.log('PeerConnection created');
-              return pc;
-          } catch (err) {
-              console.error('Error creating PeerConnection:', err);
-              throw err;
-          }
-      }
-      
-
-        peerConnection = createPeerConnection();
-        localStream.getTracks().forEach(track => {
+        localStream.getTracks().forEach((track) => {
             peerConnection.addTrack(track, localStream);
         });
     } catch (err) {
-        console.error('Error initializing media devices:', err);
-        alert('Error accessing camera/microphone. Please check permissions and make sure no other app is using them.');
-        throw err;
+        console.error('Error accessing media devices:', err);
+        alert('Please allow access to your camera and microphone.');
     }
 }
 
-// Rest of your existing code remains the same until the DOMContentLoaded event
+// Create WebRTC PeerConnection
+function createPeerConnection() {
+    const pc = new RTCPeerConnection(iceServers);
 
-// Update the DOMContentLoaded event handler
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('DOM fully loaded');
-    
-    // Initialize DOM elements first
-    initializeDOMElements();
-    
-    // Then initialize room and connection
-    function initializeRoom() {
-      // Check URL for room ID
-      const urlParams = new URLSearchParams(window.location.search);
-      roomId = urlParams.get('room');
-      
-      if (!roomId) {
-          // Generate a random room ID if none exists
-          roomId = Math.random().toString(36).substring(7);
-          // Update URL with room ID
-          window.history.pushState({}, '', `?room=${roomId}`);
-      }
-      
-      // Display room link
-      const roomLink = document.createElement('div');
-      roomLink.innerHTML = `
-          <div style="margin: 10px; padding: 10px; background: #f0f0f0; border-radius: 5px;">
-              Share this link to connect: <br>
-              <input type="text" 
-                     value="${window.location.href}" 
-                     style="width: 100%; margin-top: 5px; padding: 5px;"
-                     readonly
-                     onclick="this.select();">
-          </div>
-      `;
-      document.body.insertBefore(roomLink, document.body.firstChild);
-  }
-    initializeRoom();
-    
-    // Request camera/mic permissions and connect to signaling server
-    initialize().then(() => {
-        connectSignalingServer();
-    }).catch(err => {
-        console.error('Failed to initialize:', err);
-    });
-});
-
-// Add a function to check media permissions
-async function checkMediaPermissions() {
-    try {
-        await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        return true;
-    } catch (err) {
-        console.error('Media permission check failed:', err);
-        return false;
-    }
-}
-
-// Update the connectSignalingServer function
-function connectSignalingServer() {
-    const isLocal = window.location.hostname === 'localhost';
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = isLocal 
-        ? `${wsProtocol}//localhost:8765?room=${roomId}`
-        : `wss://webrtc-chat-yitq.onrender.com?room=${roomId}`;
-        
-    console.log('Connecting to signaling server at:', wsUrl);
-    
-    signalingServer = new WebSocket(wsUrl);
-    
-    signalingServer.onopen = async () => {
-        console.log('Connected to signaling server');
-        signalingServer.send(JSON.stringify({ 
-            type: 'ready',
-            room: roomId 
-        }));
+    pc.ontrack = (event) => {
+        remoteStream = event.streams[0];
+        remoteVideo.srcObject = remoteStream;
     };
 
-    // Rest of your existing WebSocket handlers...
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            signalingServer.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
+        }
+    };
+
+    pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'disconnected') {
+            console.warn('Peer disconnected.');
+        }
+    };
+
+    pc.ondatachannel = (event) => {
+        setupChatChannel(event.channel);
+    };
+
+    return pc;
 }
+
+// Setup chat channel
+function setupChatChannel(channel) {
+    chatChannel = channel;
+
+    chatChannel.onmessage = (event) => {
+        const message = document.createElement('div');
+        message.textContent = `Peer: ${event.data}`;
+        chatContainer.appendChild(message);
+    };
+
+    chatChannel.onopen = () => console.log('Chat channel opened');
+    chatChannel.onclose = () => console.log('Chat channel closed');
+}
+
+// Send a chat message
+function sendMessage(message) {
+    if (chatChannel && chatChannel.readyState === 'open') {
+        chatChannel.send(message);
+        const messageElement = document.createElement('div');
+        messageElement.textContent = `You: ${message}`;
+        chatContainer.appendChild(messageElement);
+    } else {
+        console.error('Chat channel is not open.');
+    }
+}
+
+// Connect to the signaling server
+function connectSignalingServer() {
+    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//webrtc-chat-yitq.onrender.com?room=${roomId}`;
+
+    signalingServer = new WebSocket(wsUrl);
+
+    signalingServer.onopen = () => {
+        signalingServer.send(JSON.stringify({ type: 'join', room: roomId }));
+    };
+
+    signalingServer.onmessage = async (event) => {
+        const data = JSON.parse(event.data);
+
+        switch (data.type) {
+            case 'offer':
+                if (!isInitiator) {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    signalingServer.send(JSON.stringify({ type: 'answer', answer }));
+                }
+                break;
+            case 'answer':
+                if (isInitiator) {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                }
+                break;
+            case 'candidate':
+                if (data.candidate) {
+                    peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
+                break;
+            default:
+                console.error('Unknown message type:', data.type);
+        }
+    };
+}
+
+// Initialize the app
+async function initialize() {
+    initializeDOMElements();
+
+    const urlParams = new URLSearchParams(window.location.search);
+    roomId = urlParams.get('room') || Math.random().toString(36).substring(7);
+    window.history.pushState({}, '', `?room=${roomId}`);
+
+    const roomLink = document.createElement('div');
+    roomLink.innerHTML = `
+        Share this link: <input type="text" value="${location.href}" readonly>
+    `;
+    document.body.prepend(roomLink);
+
+    peerConnection = createPeerConnection();
+    await initializeMedia();
+
+    if (!urlParams.get('room')) {
+        isInitiator = true;
+        const dataChannel = peerConnection.createDataChannel('chat');
+        setupChatChannel(dataChannel);
+
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        signalingServer.send(JSON.stringify({ type: 'offer', offer }));
+    }
+
+    connectSignalingServer();
+}
+
+document.addEventListener('DOMContentLoaded', initialize);

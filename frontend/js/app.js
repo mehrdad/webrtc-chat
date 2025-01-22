@@ -25,6 +25,26 @@ const iceServers = {
     ]
 };
 
+function sendMessage(message) {
+  if (!chatChannel || chatChannel.readyState !== 'open') {
+      console.error('Chat channel is not open. Cannot send message.');
+      return;
+  }
+
+  try {
+      chatChannel.send(message);
+      console.log('Message sent:', message);
+
+      // Optionally, display the sent message in the chat UI
+      const sentMessage = document.createElement('div');
+      sentMessage.textContent = `You: ${message}`;
+      sentMessage.className = 'sent-message'; // Add a class for styling if needed
+      chatContainer.appendChild(sentMessage);
+  } catch (err) {
+      console.error('Failed to send message:', err);
+  }
+}
+
 // Initialize all DOM elements
 function initializeDOMElements() {
     localVideo = document.getElementById('localVideo');

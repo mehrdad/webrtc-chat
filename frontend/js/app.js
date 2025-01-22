@@ -84,7 +84,7 @@ signalingServer.onmessage = async event => {
       updateConnectionStatus('Error in connection. Please refresh the page.');
   }
 };
-}
+
 
 // Also update the createPeerConnection function to include ICE connection state logging
 function createPeerConnection() {

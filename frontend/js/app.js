@@ -1,381 +1,256 @@
-// Global DOM elements
-let localVideo;
-let remoteVideo;
-let chatInput;
-let chatContainer;
-let connectionStatus;
-let roomLinkInput;
+class WebRTCClient {
+    constructor() {
+        this.initializeVars();
+        this.setupEventListeners();
+    }
 
-// WebRTC variables
-let roomId = '';
-let signalingServer;
-let localStream;
-let remoteStream;
-let peerConnection;
-let chatChannel;
-let isInitiator = false;
-let pendingMessages = [];
+    initializeVars() {
+        this.localVideo = document.getElementById('localVideo');
+        this.remoteVideo = document.getElementById('remoteVideo');
+        this.chatInput = document.getElementById('chat-input');
+        this.chatContainer = document.getElementById('chat-container');
+        this.connectionStatus = document.getElementById('connection-status');
+        this.roomLinkInput = document.getElementById('room-link');
 
-// ICE servers configuration
-const iceServers = {
-    iceServers: [
-        {
-            urls: [
-                'stun:stun.l.google.com:19302',
-                'stun:stun1.l.google.com:19302'
+        this.roomId = this.generateRoomId();
+        this.signalingServer = null;
+        this.peerConnection = null;
+        this.localStream = null;
+        this.dataChannel = null;
+        this.isInitiator = false;
+        this.pendingMessages = [];
+
+        this.iceServers = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { 
+                    urls: 'turn:openrelay.metered.ca:80',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
             ]
+        };
+    }
+
+    setupEventListeners() {
+        this.chatInput.addEventListener('keydown', this.handleChatInput.bind(this));
+        document.addEventListener('DOMContentLoaded', this.initialize.bind(this));
+    }
+
+    generateRoomId() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomId = urlParams.get('room') || Math.random().toString(36).substring(7);
+        window.history.pushState({}, '', `?room=${roomId}`);
+        this.roomLinkInput.value = window.location.href;
+        return roomId;
+    }
+
+    async initialize() {
+        try {
+            await this.setupLocalMedia();
+            this.connectSignalingServer();
+        } catch (err) {
+            this.updateStatus(`Initialization error: ${err.message}`);
+            console.error(err);
         }
-    ]
-};
-
-// Update connection status
-function updateConnectionStatus(status) {
-    if (connectionStatus) {
-        connectionStatus.textContent = status;
-        console.log('Connection status:', status);
-    }
-}
-
-// Send a chat message through the data channel
-function sendMessage(message) {
-    console.log('Attempting to send message:', message);
-    console.log('Chat channel state:', chatChannel ? chatChannel.readyState : 'not initialized');
-
-    if (!chatChannel) {
-        console.warn('Chat channel not initialized, queuing message');
-        pendingMessages.push(message);
-        updateConnectionStatus('Connecting... Message will be sent when ready');
-        return;
     }
 
-    if (chatChannel.readyState === 'connecting') {
-        console.log('Chat channel is connecting, queuing message');
-        pendingMessages.push(message);
-        return;
-    }
-
-    if (chatChannel.readyState !== 'open') {
-        console.warn('Chat channel not open. Current state:', chatChannel.readyState);
-        updateConnectionStatus('Chat connection not ready. Please wait.');
-        return;
-    }
-
-    try {
-        chatChannel.send(message);
-        displayMessage(message, true);
-        console.log('Message sent successfully');
-    } catch (err) {
-        console.error('Failed to send message:', err);
-        updateConnectionStatus('Failed to send message. Please try again.');
-    }
-}
-
-// Send any pending messages
-function sendPendingMessages() {
-    while (pendingMessages.length > 0 && chatChannel && chatChannel.readyState === 'open') {
-        const message = pendingMessages.shift();
-        sendMessage(message);
-    }
-}
-
-// Display message in chat container
-function displayMessage(message, isLocal) {
-    const messageDiv = document.createElement('div');
-    messageDiv.textContent = isLocal ? `You: ${message}` : `Peer: ${message}`;
-    messageDiv.className = `message ${isLocal ? 'local' : 'remote'}`;
-    chatContainer.appendChild(messageDiv);
-    chatContainer.scrollTop = chatContainer.scrollHeight;
-}
-
-// Initialize DOM elements
-function initializeDOMElements() {
-    localVideo = document.getElementById('localVideo');
-    remoteVideo = document.getElementById('remoteVideo');
-    chatInput = document.getElementById('chat-input');
-    chatContainer = document.getElementById('chat-container');
-    connectionStatus = document.getElementById('connection-status');
-    roomLinkInput = document.getElementById('room-link');
-
-    chatInput.disabled = true; // Disable chat input until connection is ready
-
-    // Add chat input event listener
-    chatInput.addEventListener('keydown', event => {
-        if (event.key === 'Enter' && chatInput.value.trim()) {
-            const message = chatInput.value.trim();
-            chatInput.value = ''; // Clear input box before sending
-            sendMessage(message);
+    async setupLocalMedia() {
+        try {
+            this.localStream = await navigator.mediaDevices.getUserMedia({ 
+                video: true, 
+                audio: true 
+            });
+            this.localVideo.srcObject = this.localStream;
+        } catch (err) {
+            this.updateStatus(`Media access error: ${err.message}`);
+            console.error(err);
         }
-    });
-}
+    }
 
-// Create a new RTCPeerConnection
-function createPeerConnection() {
-    try {
-        const pc = new RTCPeerConnection(iceServers);
-        console.log('PeerConnection created');
+    connectSignalingServer() {
+        // Use relative WebSocket URL to match Render's routing
+        const wsUrl = '/ws?room=${this.roomId}';
 
-        pc.ontrack = event => {
-            if (remoteVideo && event.streams[0]) {
-                remoteVideo.srcObject = event.streams[0];
-                updateConnectionStatus('Connected to peer');
+        this.signalingServer = new WebSocket(wsUrl);
+        this.signalingServer.onopen = () => this.handleSignalingOpen();
+        this.signalingServer.onmessage = (event) => this.handleSignalingMessage(event);
+        this.signalingServer.onclose = () => this.handleSignalingClose();
+        this.signalingServer.onerror = (error) => this.handleSignalingError(error);
+    }
+
+    handleSignalingOpen() {
+        this.updateStatus('Connected to signaling server');
+    }
+
+    handleSignalingError(error) {
+        this.updateStatus(`Signaling error: ${error}`);
+        console.error('Signaling error:', error);
+    }
+
+    async handleSignalingMessage(event) {
+        try {
+            const message = JSON.parse(event.data);
+            switch (message.type) {
+                case 'ready':
+                    this.isInitiator = message.isInitiator;
+                    await this.createPeerConnection();
+                    break;
+                case 'offer':
+                    await this.handleOffer(message.offer);
+                    break;
+                case 'answer':
+                    await this.handleAnswer(message.answer);
+                    break;
+                case 'candidate':
+                    await this.handleCandidate(message.candidate);
+                    break;
+                case 'chat':
+                    this.displayMessage(message.message, false);
+                    break;
             }
+        } catch (err) {
+            console.error('Signaling message error:', err);
+        }
+    }
+
+    async createPeerConnection() {
+        this.peerConnection = new RTCPeerConnection(this.iceServers);
+        this.setupPeerConnectionListeners();
+        this.setupDataChannel();
+
+        this.localStream.getTracks().forEach(track => 
+            this.peerConnection.addTrack(track, this.localStream)
+        );
+
+        if (this.isInitiator) {
+            const offer = await this.peerConnection.createOffer();
+            await this.peerConnection.setLocalDescription(offer);
+            this.signalingServer.send(JSON.stringify({
+                type: 'offer',
+                offer: offer,
+                room: this.roomId
+            }));
+        }
+    }
+
+    setupPeerConnectionListeners() {
+        this.peerConnection.ontrack = event => {
+            this.remoteVideo.srcObject = event.streams[0];
         };
 
-        pc.onicecandidate = event => {
-            if (event.candidate && signalingServer && signalingServer.readyState === WebSocket.OPEN) {
-                console.log('Sending ICE candidate');
-                signalingServer.send(JSON.stringify({
+        this.peerConnection.onicecandidate = event => {
+            if (event.candidate) {
+                this.signalingServer.send(JSON.stringify({
                     type: 'candidate',
-                    candidate: event.candidate
+                    candidate: event.candidate,
+                    room: this.roomId
                 }));
             }
         };
+    }
 
-        pc.oniceconnectionstatechange = () => {
-            console.log('ICE connection state:', pc.iceConnectionState);
-            switch (pc.iceConnectionState) {
-                case 'checking':
-                    updateConnectionStatus('Connecting to peer...');
-                    break;
-                case 'connected':
-                    updateConnectionStatus('Connected to peer');
-                    break;
-                case 'failed':
-                    updateConnectionStatus('Connection failed. Please refresh the page.');
-                    break;
-            }
-        };
-
-        pc.onconnectionstatechange = () => {
-            console.log('Connection state changed:', pc.connectionState);
-            switch (pc.connectionState) {
-                case 'connected':
-                    updateConnectionStatus('Connected to peer');
-                    break;
-                case 'disconnected':
-                    updateConnectionStatus('Peer disconnected. Please refresh to reconnect.');
-                    chatInput.disabled = true;
-                    break;
-                case 'failed':
-                    updateConnectionStatus('Connection failed. Please refresh the page.');
-                    chatInput.disabled = true;
-                    break;
-            }
-        };
-
-        if (isInitiator) {
-            console.log('Creating data channel as initiator');
-            chatChannel = pc.createDataChannel('chat', {
-                ordered: true
-            });
-            setupChatChannel(chatChannel);
+    setupDataChannel() {
+        if (this.isInitiator) {
+            this.dataChannel = this.peerConnection.createDataChannel('chat');
+            this.setupDataChannelListeners();
         } else {
-            console.log('Waiting for data channel as non-initiator');
-            pc.ondatachannel = event => {
-                console.log('Received data channel');
-                chatChannel = event.channel;
-                setupChatChannel(chatChannel);
+            this.peerConnection.ondatachannel = (event) => {
+                this.dataChannel = event.channel;
+                this.setupDataChannelListeners();
             };
         }
-
-        return pc;
-    } catch (err) {
-        console.error('Failed to create peer connection:', err);
-        updateConnectionStatus('Failed to create connection. Please check your browser compatibility.');
-        return null;
     }
-}
 
-// Set up the chat channel
-function setupChatChannel(channel) {
-    console.log('Setting up chat channel');
-    
-    channel.onopen = () => {
-        console.log('Chat channel opened');
-        chatInput.disabled = false;
-        chatInput.placeholder = 'Type a message and press Enter';
-        updateConnectionStatus('Chat channel opened');
-        sendPendingMessages(); // Send any messages that were queued
-    };
+    setupDataChannelListeners() {
+        this.dataChannel.onopen = () => {
+            this.updateStatus('Data channel is open');
+            this.pendingMessages.forEach(message => {
+                this.dataChannel.send(message);
+            });
+            this.pendingMessages = [];
+        };
 
-    channel.onclose = () => {
-        console.log('Chat channel closed');
-        chatInput.disabled = true;
-        chatInput.placeholder = 'Chat disconnected';
-        updateConnectionStatus('Chat channel closed');
-        chatChannel = null; // Reset chat channel
-    };
+        this.dataChannel.onmessage = (event) => {
+            this.displayMessage(event.data, false);
+        };
 
-    channel.onmessage = event => {
-        console.log('Message received:', event.data);
-        displayMessage(event.data, false);
-    };
-
-    channel.onerror = err => {
-        console.error('Chat channel error:', err);
-        updateConnectionStatus('Chat error occurred. Please refresh the page.');
-    };
-}
-
-// Initialize WebRTC and media streams
-async function initialize() {
-    try {
-        localStream = await navigator.mediaDevices.getUserMedia({ 
-            video: true, 
-            audio: true 
-        });
-        localVideo.srcObject = localStream;
-        updateConnectionStatus('Local media initialized');
-
-        peerConnection = createPeerConnection();
-        if (!peerConnection) return;
-
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-        });
-        
-        console.log('Local media and peer connection initialized');
-    } catch (err) {
-        console.error('Media initialization failed:', err);
-        updateConnectionStatus('Failed to access camera/microphone. Please check your permissions.');
+        this.dataChannel.onclose = () => {
+            this.updateStatus('Data channel closed');
+        };
     }
-}
 
-// Connect to the signaling server
-function connectSignalingServer() {
-    const isLocal = window.location.hostname === 'localhost';
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = isLocal
-        ? `${wsProtocol}//localhost:8765?room=${roomId}`
-        : `wss://webrtc-chat-yitq.onrender.com?room=${roomId}`;
-
-    console.log('Connecting to signaling server:', wsUrl);
-    signalingServer = new WebSocket(wsUrl);
-
-    signalingServer.onopen = () => {
-        console.log('Connected to signaling server');
-        updateConnectionStatus('Connected to server');
-        signalingServer.send(JSON.stringify({
-            type: 'ready',
-            room: roomId
+    async handleOffer(offer) {
+        await this.peerConnection.setRemoteDescription(offer);
+        const answer = await this.peerConnection.createAnswer();
+        await this.peerConnection.setLocalDescription(answer);
+        this.signalingServer.send(JSON.stringify({
+            type: 'answer',
+            answer: answer,
+            room: this.roomId
         }));
-    };
-
-    signalingServer.onclose = () => {
-        console.log('Disconnected from signaling server');
-        updateConnectionStatus('Connection to server lost. Please refresh the page.');
-    };
-
-    signalingServer.onerror = () => {
-        console.error('Signaling server error');
-        updateConnectionStatus('Failed to connect to server. Please check your internet connection.');
-    };
-
-    signalingServer.onmessage = async event => {
-        try {
-            const message = JSON.parse(event.data);
-            console.log('Received signaling message:', message.type);
-
-            switch (message.type) {
-                case 'ready':
-                    isInitiator = message.isInitiator;
-                    updateConnectionStatus(isInitiator ? 'Waiting for peer to join...' : 'Joining existing room...');
-                    
-                    // Create and send offer if we are the initiator
-                    if (isInitiator && peerConnection) {
-                        try {
-                            const offer = await peerConnection.createOffer();
-                            await peerConnection.setLocalDescription(offer);
-                            console.log('Sending offer to peer');
-                            signalingServer.send(JSON.stringify({
-                                type: 'offer',
-                                offer: offer
-                            }));
-                        } catch (err) {
-                            console.error('Error creating offer:', err);
-                            updateConnectionStatus('Failed to create offer. Please refresh.');
-                        }
-                    }
-                    break;
-                    
-                case 'offer':
-                    console.log('Received offer, creating answer');
-                    if (!peerConnection) {
-                        console.error('No peer connection available');
-                        return;
-                    }
-                    try {
-                        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
-                        const answer = await peerConnection.createAnswer();
-                        await peerConnection.setLocalDescription(answer);
-                        console.log('Sending answer to peer');
-                        signalingServer.send(JSON.stringify({
-                            type: 'answer',
-                            answer: answer
-                        }));
-                    } catch (err) {
-                        console.error('Error creating answer:', err);
-                        updateConnectionStatus('Failed to create answer. Please refresh.');
-                    }
-                    break;
-
-                case 'answer':
-                    console.log('Received answer');
-                    if (!peerConnection) {
-                        console.error('No peer connection available');
-                        return;
-                    }
-                    try {
-                        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
-                        console.log('Remote description set successfully');
-                    } catch (err) {
-                        console.error('Error setting remote description:', err);
-                        updateConnectionStatus('Failed to complete connection. Please refresh.');
-                    }
-                    break;
-
-                case 'candidate':
-                    if (!peerConnection) {
-                        console.error('No peer connection available');
-                        return;
-                    }
-                    try {
-                        await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
-                        console.log('Added ICE candidate successfully');
-                    } catch (err) {
-                        console.error('Error adding ICE candidate:', err);
-                    }
-                    break;
-
-                default:
-                    console.warn('Unknown message type:', message.type);
-            }
-        } catch (err) {
-            console.error('Error handling signaling message:', err);
-            updateConnectionStatus('Error in connection. Please refresh the page.');
-        }
-    };
-}
-
-// Initialize room and handle room creation or joining
-function initializeRoom() {
-    const urlParams = new URLSearchParams(window.location.search);
-    roomId = urlParams.get('room') || Math.random().toString(36).substring(7);
-    window.history.pushState({}, '', `?room=${roomId}`);
-    
-    if (roomLinkInput) {
-        roomLinkInput.value = window.location.href;
     }
-    console.log('Room initialized:', roomId);
+
+    async handleAnswer(answer) {
+        await this.peerConnection.setRemoteDescription(answer);
+    }
+
+    async handleCandidate(candidate) {
+        try {
+            await this.peerConnection.addIceCandidate(candidate);
+        } catch (err) {
+            console.error('Error adding ICE candidate:', err);
+        }
+    }
+
+    handleSignalingClose() {
+        this.updateStatus('Disconnected. Reconnecting...');
+        setTimeout(() => this.connectSignalingServer(), 2000);
+    }
+
+    handleChatInput(event) {
+        if (event.key === 'Enter' && this.chatInput.value.trim()) {
+            const message = this.chatInput.value.trim();
+            this.chatInput.value = '';
+            this.sendMessage(message);
+        }
+    }
+
+    sendMessage(message) {
+        if (this.dataChannel && this.dataChannel.readyState === 'open') {
+            this.dataChannel.send(message);
+            this.displayMessage(message, true);
+        } else {
+            // Fallback to signaling server if data channel is not ready
+            this.signalingServer.send(JSON.stringify({
+                type: 'chat',
+                message: message,
+                room: this.roomId
+            }));
+            this.displayMessage(message, true);
+            this.pendingMessages.push(message);
+        }
+    }
+
+    displayMessage(message, isLocal) {
+        const messageDiv = document.createElement('div');
+        messageDiv.textContent = `${isLocal ? 'You' : 'Peer'}: ${message}`;
+        messageDiv.className = `message ${isLocal ? 'local' : 'remote'}`;
+        this.chatContainer.appendChild(messageDiv);
+        this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
+    }
+
+    updateStatus(message) {
+        this.connectionStatus.textContent = message;
+        console.log('Status:', message);
+    }
 }
 
-// DOMContentLoaded handler
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('Document loaded, initializing application');
-    initializeDOMElements();
-    initializeRoom();
-    initialize().then(connectSignalingServer).catch(err => {
-        console.error('Failed to initialize:', err);
-        updateConnectionStatus('Failed to initialize. Please refresh the page.');
-    });
-});
+new WebRTCClient();

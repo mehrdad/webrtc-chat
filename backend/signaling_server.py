@@ -110,6 +110,7 @@ class WebRTCSignalingServer:
             port,
             ping_interval=20,
             ping_timeout=60,
+            subprotocols=['webrtc'],
             ssl=ssl_context
         )
         logging.info(f"WebSocket server running on port {port}")

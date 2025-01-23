@@ -4,116 +4,109 @@ import json
 import logging
 import os
 from urllib.parse import parse_qs
+from typing import Dict, Set
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# Store clients by room
-rooms = {}
+class WebRTCSignalingServer:
+    def __init__(self):
+        self.rooms: Dict[str, Set[websockets.WebSocketServerProtocol]] = {}
 
-async def handler(websocket, path):
-    try:
-        # Parse room from query string
+    async def handler(self, websocket, path):
+        room_id = None
+        try:
+            room_id = self.parse_room_id(path)
+            if not room_id:
+                await websocket.close(1002, "No room ID")
+                return
+
+            await self.manage_room_connection(websocket, room_id)
+
+        except Exception as e:
+            logging.error(f"Handler error in room {room_id}: {e}")
+            await websocket.close(1011, "Server error")
+
+    def parse_room_id(self, path):
         query_string = path.split('?')[1] if '?' in path else ''
         query_params = parse_qs(query_string)
-        room_id = query_params.get('room', [None])[0]
-        
-        if not room_id:
-            logging.warning("No room ID provided")
-            await websocket.close(1002, "No room ID provided")
-            return
-        
-        # Initialize room if it doesn't exist
-        if room_id not in rooms:
-            rooms[room_id] = set()
-        
-        # Add client to room
-        rooms[room_id].add(websocket)
-        logging.info(f"Client joined room {room_id}. Clients in room: {len(rooms[room_id])}")
-        
-        # Notify first client they are the initiator
-        if len(rooms[room_id]) == 1:
+        return query_params.get('room', [None])[0]
+
+    async def manage_room_connection(self, websocket, room_id):
+        self.rooms.setdefault(room_id, set()).add(websocket)
+        logging.info(f"Client joined room {room_id}. Clients: {len(self.rooms[room_id])}")
+
+        try:
+            await self.handle_room_initiation(websocket, room_id)
+            await self.process_client_messages(websocket, room_id)
+        finally:
+            await self.cleanup_room(websocket, room_id)
+
+    async def handle_room_initiation(self, websocket, room_id):
+        room_clients = self.rooms[room_id]
+        if len(room_clients) == 1:
             await websocket.send(json.dumps({
                 'type': 'ready',
                 'isInitiator': True,
                 'room': room_id
             }))
-        elif len(rooms[room_id]) > 1:
-            # Notify second client they are not the initiator
-            for client in rooms[room_id]:
+        elif len(room_clients) > 1:
+            for client in room_clients:
                 if client != websocket:
                     await client.send(json.dumps({
                         'type': 'ready',
                         'isInitiator': False,
                         'room': room_id
                     }))
-        
-        try:
-            async for message in websocket:
-                try:
-                    data = json.loads(message)
-                    
-                    # Validate message structure
-                    if not isinstance(data, dict):
-                        logging.warning("Invalid message format")
-                        continue
-                    
-                    # Add room to message if not present
-                    data['room'] = room_id
-                    
-                    logging.info(f"Received message type '{data.get('type')}' in room {room_id}")
-                    
-                    # Relay message to all other clients in the same room
-                    for client in rooms[room_id]:
-                        if client != websocket and not client.closed:
-                            try:
-                                await client.send(json.dumps(data))
-                            except Exception as relay_err:
-                                logging.error(f"Error relaying message: {relay_err}")
-                    
-                except json.JSONDecodeError:
-                    logging.error("Invalid JSON message received")
-                    continue
-                
-        except websockets.ConnectionClosed:
-            logging.info(f"Client disconnected from room {room_id}")
-        finally:
-            # Remove client from room
-            if websocket in rooms[room_id]:
-                rooms[room_id].remove(websocket)
-            if not rooms[room_id]:
-                del rooms[room_id]
-                logging.info(f"Room {room_id} deleted")
-                
-    except Exception as e:
-        logging.error(f"Error in handler: {str(e)}")
-        await websocket.close(1011, "Internal server error")
 
-async def main():
-    # Get port from environment variable (Render.com sets this)
-    port = int(os.environ.get("PORT", 10000))
-    
-    # Log startup
-    logging.info(f"Starting WebSocket server on port {port}")
-    
-    server = await websockets.serve(
-        handler, 
-        "0.0.0.0",  # Listen on all available interfaces
-        port,
-        ping_interval=20,
-        ping_timeout=60
-    )
-    
-    logging.info(f"WebSocket server is running on port {port}")
-    await server.wait_closed()
+    async def process_client_messages(self, websocket, room_id):
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+                data['room'] = room_id
+                logging.info(f"Message type '{data.get('type')}' in {room_id}")
+                await self.relay_message(websocket, room_id, data)
+            except json.JSONDecodeError:
+                logging.error("Invalid JSON message")
+
+    async def relay_message(self, sender, room_id, data):
+        for client in self.rooms[room_id]:
+            if client != sender and not client.closed:
+                try:
+                    await client.send(json.dumps(data))
+                except Exception as e:
+                    logging.error(f"Message relay error: {e}")
+
+    async def cleanup_room(self, websocket, room_id):
+        if websocket in self.rooms[room_id]:
+            self.rooms[room_id].remove(websocket)
+        if not self.rooms[room_id]:
+            del self.rooms[room_id]
+            logging.info(f"Room {room_id} deleted")
+
+    async def run_server(self):
+        port = int(os.environ.get("PORT", 8765))
+        logging.info(f"Starting WebSocket server on port {port}")
+        server = await websockets.serve(
+            self.handler, 
+            "0.0.0.0", 
+            port,
+            ping_interval=20,
+            ping_timeout=60
+        )
+        logging.info(f"WebSocket server running on port {port}")
+        await server.wait_closed()
+
+def main():
+    server = WebRTCSignalingServer()
+    try:
+        asyncio.run(server.run_server())
+    except KeyboardInterrupt:
+        logging.info("Server stopped")
+    except Exception as e:
+        logging.error(f"Server error: {e}")
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Server stopped by user")
-    except Exception as e:
-        logging.error(f"Server error: {str(e)}")
+    main()

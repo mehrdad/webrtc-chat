@@ -3,6 +3,7 @@ import websockets
 import json
 import logging
 import os
+import ssl
 from urllib.parse import parse_qs
 from typing import Dict, Set
 
@@ -35,7 +36,10 @@ class WebRTCSignalingServer:
         return query_params.get('room', [None])[0]
 
     async def manage_room_connection(self, websocket, room_id):
-        self.rooms.setdefault(room_id, set()).add(websocket)
+        if room_id not in self.rooms:
+            self.rooms[room_id] = set()
+
+        self.rooms[room_id].add(websocket)
         logging.info(f"Client joined room {room_id}. Clients: {len(self.rooms[room_id])}")
 
         try:
@@ -66,13 +70,13 @@ class WebRTCSignalingServer:
             try:
                 data = json.loads(message)
                 data['room'] = room_id
-                logging.info(f"Message type '{data.get('type')}' in {room_id}")
+                logging.info(f"Received message type '{data.get('type')}' in {room_id}")
                 await self.relay_message(websocket, room_id, data)
             except json.JSONDecodeError:
                 logging.error("Invalid JSON message")
 
     async def relay_message(self, sender, room_id, data):
-        for client in self.rooms[room_id]:
+        for client in list(self.rooms.get(room_id, [])):
             if client != sender and not client.closed:
                 try:
                     await client.send(json.dumps(data))
@@ -80,21 +84,33 @@ class WebRTCSignalingServer:
                     logging.error(f"Message relay error: {e}")
 
     async def cleanup_room(self, websocket, room_id):
-        if websocket in self.rooms[room_id]:
+        if room_id in self.rooms and websocket in self.rooms[room_id]:
             self.rooms[room_id].remove(websocket)
-        if not self.rooms[room_id]:
+        
+        if room_id in self.rooms and not self.rooms[room_id]:
             del self.rooms[room_id]
             logging.info(f"Room {room_id} deleted")
 
     async def run_server(self):
         port = int(os.environ.get("PORT", 8765))
         logging.info(f"Starting WebSocket server on port {port}")
+        
+        # Optional SSL context for HTTPS/WSS
+        ssl_context = None
+        if os.environ.get('SSL_CERT') and os.environ.get('SSL_KEY'):
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_context.load_cert_chain(
+                os.environ.get('SSL_CERT'), 
+                os.environ.get('SSL_KEY')
+            )
+
         server = await websockets.serve(
             self.handler, 
             "0.0.0.0", 
             port,
             ping_interval=20,
-            ping_timeout=60
+            ping_timeout=60,
+            ssl=ssl_context
         )
         logging.info(f"WebSocket server running on port {port}")
         await server.wait_closed()

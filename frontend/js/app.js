@@ -66,6 +66,7 @@ class WebRTCClient {
 
     connectSignalingServer() {
         this.signalingServer = io({
+            path: '/socket.io',
             query: { room: this.roomId },
             transports: ['websocket']
         });

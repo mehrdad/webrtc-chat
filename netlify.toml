@@ -1,0 +1,5 @@
+[[redirects]]
+  from = "/ws"
+  to = "/.netlify/functions/websocket"
+  status = 200
+  force = true

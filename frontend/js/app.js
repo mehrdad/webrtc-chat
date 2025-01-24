@@ -24,14 +24,8 @@ class WebRTCClient {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' },
                 { 
                     urls: 'turn:openrelay.metered.ca:80',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                },
-                {
-                    urls: 'turn:openrelay.metered.ca:443',
                     username: 'openrelayproject',
                     credential: 'openrelayproject'
                 }
@@ -63,62 +57,59 @@ class WebRTCClient {
     }
 
     async setupLocalMedia() {
-        try {
-            this.localStream = await navigator.mediaDevices.getUserMedia({ 
-                video: true, 
-                audio: true 
-            });
-            this.localVideo.srcObject = this.localStream;
-        } catch (err) {
-            this.updateStatus(`Media access error: ${err.message}`);
-            console.error(err);
-        }
+        this.localStream = await navigator.mediaDevices.getUserMedia({ 
+            video: true, 
+            audio: true 
+        });
+        this.localVideo.srcObject = this.localStream;
     }
 
     connectSignalingServer() {
-        // Use relative WebSocket URL to match Render's routing
-        const wsUrl = '/ws?room=${this.roomId}';
+        this.signalingServer = io({
+            query: { room: this.roomId },
+            transports: ['websocket']
+        });
 
-        this.signalingServer = new WebSocket(wsUrl);
-        this.signalingServer.onopen = () => this.handleSignalingOpen();
-        this.signalingServer.onmessage = (event) => this.handleSignalingMessage(event);
-        this.signalingServer.onclose = () => this.handleSignalingClose();
-        this.signalingServer.onerror = (error) => this.handleSignalingError(error);
-    }
+        this.signalingServer.on('connect', () => {
+            this.updateStatus('Connected to signaling server');
+        });
 
-    handleSignalingOpen() {
-        this.updateStatus('Connected to signaling server');
-    }
-
-    handleSignalingError(error) {
-        this.updateStatus(`Signaling error: ${error}`);
-        console.error('Signaling error:', error);
-    }
-
-    async handleSignalingMessage(event) {
-        try {
-            const message = JSON.parse(event.data);
-            switch (message.type) {
-                case 'ready':
-                    this.isInitiator = message.isInitiator;
-                    await this.createPeerConnection();
-                    break;
-                case 'offer':
-                    await this.handleOffer(message.offer);
-                    break;
-                case 'answer':
-                    await this.handleAnswer(message.answer);
-                    break;
-                case 'candidate':
-                    await this.handleCandidate(message.candidate);
-                    break;
-                case 'chat':
-                    this.displayMessage(message.message, false);
-                    break;
+        this.signalingServer.on('signal', async (message) => {
+            try {
+                switch (message.type) {
+                    case 'ready':
+                        this.isInitiator = message.isInitiator;
+                        await this.createPeerConnection();
+                        break;
+                    case 'offer':
+                        await this.handleOffer(message.offer);
+                        break;
+                    case 'answer':
+                        await this.handleAnswer(message.answer);
+                        break;
+                    case 'candidate':
+                        await this.handleCandidate(message.candidate);
+                        break;
+                    case 'chat':
+                        this.displayMessage(message.message, false);
+                        break;
+                }
+            } catch (error) {
+                console.error('Signaling message error:', error);
             }
-        } catch (err) {
-            console.error('Signaling message error:', err);
-        }
+        });
+
+        this.signalingServer.on('connect_error', (error) => {
+            this.updateStatus(`Connection error: ${error.message}`);
+            console.error('Socket.IO connection error:', error);
+        });
+
+        this.signalingServer.on('disconnect', (reason) => {
+            this.updateStatus(`Disconnected: ${reason}. Reconnecting...`);
+            if (reason !== 'io server disconnect') {
+                this.signalingServer.connect();
+            }
+        });
     }
 
     async createPeerConnection() {
@@ -133,11 +124,11 @@ class WebRTCClient {
         if (this.isInitiator) {
             const offer = await this.peerConnection.createOffer();
             await this.peerConnection.setLocalDescription(offer);
-            this.signalingServer.send(JSON.stringify({
+            this.signalingServer.emit('signal', {
                 type: 'offer',
                 offer: offer,
                 room: this.roomId
-            }));
+            });
         }
     }
 
@@ -148,11 +139,11 @@ class WebRTCClient {
 
         this.peerConnection.onicecandidate = event => {
             if (event.candidate) {
-                this.signalingServer.send(JSON.stringify({
+                this.signalingServer.emit('signal', {
                     type: 'candidate',
                     candidate: event.candidate,
                     room: this.roomId
-                }));
+                });
             }
         };
     }
@@ -191,11 +182,11 @@ class WebRTCClient {
         await this.peerConnection.setRemoteDescription(offer);
         const answer = await this.peerConnection.createAnswer();
         await this.peerConnection.setLocalDescription(answer);
-        this.signalingServer.send(JSON.stringify({
+        this.signalingServer.emit('signal', {
             type: 'answer',
             answer: answer,
             room: this.roomId
-        }));
+        });
     }
 
     async handleAnswer(answer) {
@@ -208,11 +199,6 @@ class WebRTCClient {
         } catch (err) {
             console.error('Error adding ICE candidate:', err);
         }
-    }
-
-    handleSignalingClose() {
-        this.updateStatus('Disconnected. Reconnecting...');
-        setTimeout(() => this.connectSignalingServer(), 2000);
     }
 
     handleChatInput(event) {
@@ -228,12 +214,11 @@ class WebRTCClient {
             this.dataChannel.send(message);
             this.displayMessage(message, true);
         } else {
-            // Fallback to signaling server if data channel is not ready
-            this.signalingServer.send(JSON.stringify({
+            this.signalingServer.emit('signal', {
                 type: 'chat',
                 message: message,
                 room: this.roomId
-            }));
+            });
             this.displayMessage(message, true);
             this.pendingMessages.push(message);
         }
